@@ -1,0 +1,4 @@
+pycryptodome
+matplotlib
+tqdm
+numpy 
