@@ -15,16 +15,12 @@ class AccumulatorScheme(ABC):
         :param state: A list of byte strings representing the initial state elements.
         """
         self.state = state
-        self.accumulator = None
-        self.prover_time = 0.0
-        self.verifier_time = 0.0
-        self.proof_size = 0
+        self.accumulator: Any = None
 
     @abstractmethod
     def create(self):
         """
         Creates the accumulator from the initial state.
-        This method should be timed for benchmarking the prover's setup time.
         """
         pass
 
@@ -34,7 +30,7 @@ class AccumulatorScheme(ABC):
         Generates a membership proof for a given element.
 
         :param element: The element to prove membership for.
-        :return: A proof object. The structure of this object is scheme-dependent.
+        :return: A proof object, or None if the element is not in the state.
         """
         pass
 
@@ -50,13 +46,12 @@ class AccumulatorScheme(ABC):
         pass
 
     @abstractmethod
-    def update(self, additions: list[bytes], deletions: list[bytes]):
+    def update(self, old_element: bytes, new_element: bytes):
         """
-        Updates the accumulator with additions and deletions.
-        This method should also be timed to measure the prover's update overhead.
+        Updates the accumulator by replacing one element with another.
 
-        :param additions: A list of elements to add to the state.
-        :param deletions: A list of elements to remove from the state.
+        :param old_element: The element to be removed from the state.
+        :param new_element: The element to be added to the state.
         """
         pass
 

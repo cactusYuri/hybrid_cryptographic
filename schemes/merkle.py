@@ -1,5 +1,5 @@
 import time
-from typing import Any
+from typing import Any, Dict
 
 from .base_scheme import AccumulatorScheme
 from utils.crypto import get_hash
@@ -7,29 +7,32 @@ from utils.crypto import get_hash
 class MerkleTree(AccumulatorScheme):
     """
     A simplified Merkle Tree implementation for benchmarking.
-    - Does not handle empty states or non-power-of-two leaf counts perfectly,
-      but pads to the nearest power of two.
-    - Proofs are lists of sibling hashes.
+    - Pads to the nearest power of two.
+    - Uses a hash map for O(1) leaf lookups.
     """
 
     def __init__(self, state: list[bytes]):
         super().__init__(state)
         self.leaves = [get_hash(s) for s in self.state]
-        self.tree = []
+        self.tree: list[list[bytes]] = []
+        self.leaf_to_index: Dict[bytes, int] = {}
 
     def create(self):
-        start_time = time.perf_counter()
-        
         num_leaves = len(self.leaves)
         if num_leaves == 0:
             self.tree = [[]]
             self.accumulator = get_hash(b'')
-            self.prover_time = time.perf_counter() - start_time
             return
 
         next_pow_2 = 1 << (num_leaves - 1).bit_length() if num_leaves > 0 else 1
         self.padded_leaves = self.leaves + [b'\x00' * 32] * (next_pow_2 - num_leaves)
         
+        # Build the leaf_to_index map
+        for i, leaf_hash in enumerate(self.padded_leaves):
+            # We only map original leaves, not padding.
+            if i < num_leaves:
+                self.leaf_to_index[leaf_hash] = i
+
         self.tree = [self.padded_leaves]
         level = self.padded_leaves
         while len(level) > 1:
@@ -43,28 +46,12 @@ class MerkleTree(AccumulatorScheme):
             level = next_level
         
         self.accumulator = self.tree[-1][0] if self.tree and self.tree[-1] else None
-        self.prover_time = time.perf_counter() - start_time
 
-    def get_leaf_index(self, element: bytes) -> int:
-        """Helper to find the index of an element's hash in the padded leaf list."""
+    def prove_membership(self, element: bytes) -> list[bytes] | None:
         leaf_hash = get_hash(element)
-        try:
-            # Find the original state index first
-            state_idx = self.state.index(element)
-            # Now find the hash at that index in the leaves list
-            if state_idx < len(self.leaves) and self.leaves[state_idx] == leaf_hash:
-                 # This is a bit of a shortcut. Assumes leaves are in same order as state.
-                 return state_idx
-        except ValueError:
-            return -1
-        return -1
-
-    def prove_membership(self, element: bytes) -> list[bytes]:
-        start_time = time.perf_counter()
+        idx = self.leaf_to_index.get(leaf_hash)
         
-        idx = self.get_leaf_index(element)
-        if idx == -1:
-            self.prover_time += time.perf_counter() - start_time
+        if idx is None:
             return None
 
         proof = []
@@ -75,23 +62,16 @@ class MerkleTree(AccumulatorScheme):
                 proof.append(level[sibling_idx])
             idx //= 2
             
-        self.prover_time += time.perf_counter() - start_time
-        self.proof_size = self.get_proof_size(proof)
         return proof
 
     def verify_membership(self, element: bytes, proof: list[bytes]) -> bool:
-        start_time = time.perf_counter()
-        
         leaf_hash = get_hash(element)
-        
-        # Find the original index of the leaf hash to determine path
-        try:
-            # This is a shortcut for verification. A real client wouldn't know the index.
-            # They would be given the index or a path. For this simulation, we find it.
-            leaf_hash = get_hash(element)
-            idx = self.tree[0].index(leaf_hash)
-        except ValueError:
-             self.verifier_time += time.perf_counter() - start_time
+        idx = self.leaf_to_index.get(leaf_hash)
+
+        if idx is None:
+             # If the element isn't supposed to be in the tree, we can't find its index.
+             # Verification should fail. A more robust way might be to pass index in proof.
+             # For this benchmark, we assume verifier can look it up.
              return False
 
         computed_hash = leaf_hash
@@ -103,41 +83,51 @@ class MerkleTree(AccumulatorScheme):
                 computed_hash = get_hash(computed_hash + sibling_hash)
             idx //= 2
 
-        is_valid = computed_hash == self.accumulator
-        self.verifier_time += time.perf_counter() - start_time
-        return is_valid
+        return computed_hash == self.accumulator
 
-    def update(self, element: bytes, new_element: bytes):
+    def update(self, old_element: bytes, new_element: bytes):
         """
         Efficiently updates the Merkle tree for a single element change.
-        Complexity: O(log N)
+        The cryptographic part of this update is O(log N).
+        Note: The self.state.index call is O(N), making state management inefficient.
+        For a real-world application, a dictionary or other mapping should be used
+        to track element indices for O(1) lookup.
         """
-        start_time = time.perf_counter()
+        old_leaf_hash = get_hash(old_element)
+        idx = self.leaf_to_index.get(old_leaf_hash)
 
-        try:
-            idx = self.state.index(element)
-            self.state[idx] = new_element
-            leaf_hash = get_hash(new_element)
-            self.leaves[idx] = leaf_hash
-        except ValueError:
-            # For this efficient update, we assume the element exists.
-            # Handling additions/deletions requires resizing, which is more complex.
-            # This implementation focuses on benchmarking in-place updates.
-            self.prover_time += time.perf_counter() - start_time
+        if idx is None:
+            # Element not found, cannot update.
             return
+        
+        # Update state and get new leaf hash
+        try:
+            # This is an O(N) operation.
+            state_idx = self.state.index(old_element)
+            self.state[state_idx] = new_element
+        except ValueError:
+            return # Should not happen if idx was found
 
-        # Update the leaf in the tree's base level
-        self.tree[0][idx] = leaf_hash
+        new_leaf_hash = get_hash(new_element)
+
+        # Update the leaf in the tree's base level and the lookup map
+        self.tree[0][idx] = new_leaf_hash
+        del self.leaf_to_index[old_leaf_hash]
+        self.leaf_to_index[new_leaf_hash] = idx
         
         # Propagate the change up to the root
+        current_idx = idx
         for i in range(len(self.tree) - 1):
-            is_right_node = idx % 2
-            parent_idx = (idx - 1) // 2 if is_right_node else idx // 2
+            is_right_node = current_idx % 2
+            parent_idx = (current_idx - 1) // 2 if is_right_node else current_idx // 2
             
-            sibling_idx = idx - 1 if is_right_node else idx + 1
+            sibling_idx = current_idx - 1 if is_right_node else current_idx + 1
             
-            left = self.tree[i][sibling_idx if is_right_node else idx]
-            right = self.tree[i][idx if is_right_node else sibling_idx]
+            left_child_idx = sibling_idx if is_right_node else current_idx
+            right_child_idx = current_idx if is_right_node else sibling_idx
+            
+            left = self.tree[i][left_child_idx]
+            right = self.tree[i][right_child_idx]
 
             new_parent_hash = get_hash(left + right)
 
@@ -146,7 +136,6 @@ class MerkleTree(AccumulatorScheme):
                 break
 
             self.tree[i+1][parent_idx] = new_parent_hash
-            idx = parent_idx
+            current_idx = parent_idx
         
         self.accumulator = self.tree[-1][0]
-        self.prover_time += time.perf_counter() - start_time

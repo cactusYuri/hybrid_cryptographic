@@ -36,8 +36,34 @@ def prime_representatives(elements: list[bytes], bit_length: int) -> list[int]:
     return primes
 
 def product(numbers: list[int]) -> int:
-    """Computes the product of a list of numbers."""
-    res = 1
-    for n in numbers:
-        res *= n
-    return res 
+    """
+    Computes the product of a list of numbers.
+    Uses a product tree for lists longer than a certain threshold for efficiency.
+    """
+    if not numbers:
+        return 1
+    # For short lists, linear product is fine. For longer lists, product tree is faster.
+    if len(numbers) < 64:
+        res = 1
+        for n in numbers:
+            res *= n
+        return res
+    else:
+        return product_tree(numbers)
+
+def product_tree(numbers: list[int]) -> int:
+    """
+    Computes the product of a list of numbers using a product tree algorithm.
+    This is much more efficient than a linear product for large lists.
+    """
+    num = len(numbers)
+    if num == 0:
+        return 1
+    if num == 1:
+        return numbers[0]
+    
+    mid = num // 2
+    left_prod = product_tree(numbers[:mid])
+    right_prod = product_tree(numbers[mid:])
+    
+    return left_prod * right_prod 
